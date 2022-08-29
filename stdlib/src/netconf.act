@@ -1,0 +1,246 @@
+
+import net
+import process
+"""Netconf client"""
+
+SEPARATOR_FRAMING: int = 0
+CHUNKED_FRAMING: int = 1
+
+CAP_NC_1_0: bytes = b"urn:ietf:params:netconf:base:1.0"
+CAP_NC_1_1: bytes = b"urn:ietf:params:netconf:base:1.1"
+
+actor Client(auth: process.ProcessAuth, address: str, port: int, username: str, password: str, key: ?str, on_connect: action(Client) -> None, on_error: action(Client, str) -> None):
+    def _self() -> Client:
+        """Gets a reference to our own actor that we can send to others"""
+        NotImplemented
+
+    self = _self()
+    var framing = SEPARATOR_FRAMING
+    var buf = b""
+    STATE_HELLO = 0
+    STATE_NORMAL = 1
+    var state = STATE_HELLO
+
+    var session_id = None
+    var capabilities: list[bytes] = []
+
+    var message_id = 1
+    var rpc_cbs = {}
+
+    def nop(p: process.Process, data: bytes):
+        pass
+
+    var p_on_stdout_redirect = nop
+
+    def p_on_stderr(p, data):
+        print("STDERR: ", data)
+
+    def p_on_exit(p, exit_code, term_signal):
+        print("Exit!!!")
+
+    def p_on_error(p, error):
+        print("Error from process:", error)
+
+    cmd_env = None
+    if key is not None:
+        cmd = ["ssh", "-p", str(port), "-l", username, "-i", "~kll/.ssh/id_rsa", address]
+    elif password is not None:
+        cmd_env = {"SSHPASS": password}
+        cmd = ["/opt/homebrew/bin/sshpass", "-e", "/usr/bin/ssh", "-p", str(port), "-l", username, "-i", "~kll/.ssh/id_rsa", address, "-s", "netconf"]
+    else:
+        cmd = ["/usr/bin/ssh", "-p", str(port), "-l", username, "-i", "~kll/.ssh/id_rsa", address, "-s", "netconf"]
+    p = process.Process(auth, cmd, None, cmd_env, p_on_stdout_redirect, p_on_stderr, p_on_exit, p_on_error)
+
+    def send_message(msg: str) -> None:
+        if framing == SEPARATOR_FRAMING:
+            write(msg + "]]>]]>")
+        elif framing == CHUNKED_FRAMING:
+            # TODO: there's a minimum and maximum chunk size, right? need to chunk accordingly
+            mlen = str(len(msg))
+            data = "\n#" + mlen + "\n" + msg + "\n##\n"
+            write(data)
+
+    def rpc(query: str, callback: action(Client, str) -> None) -> None:
+        message_id += 1
+        rpc_cbs[message_id] = callback
+        msg = "<nc:rpc nc:message-id=\"" + str(message_id) + "\" xmlns:nc=\"urn:ietf:params:xml:ns:netconf:base:1.0\">" + query + "</nc:rpc>"
+        send_message(msg)
+
+    def write(data: str) -> None:
+        p.write(data.encode())
+
+    def _parse_capabilities(caps: bytes):
+        CAP_START = b"<capability>"
+        CAP_END = b"</capability>"
+        if caps == b"":
+            return
+        elif caps.startswith(CAP_START, None, None) and caps.endswith(CAP_END, None, None):
+            end_pos = caps.index(CAP_END, None, None)
+            tag_content: bytes = caps[len(CAP_START):end_pos]
+            capabilities.append(tag_content)
+            _parse_capabilities(caps[len(CAP_START) + len(tag_content) + len(CAP_END):])
+        else:
+            raise ValueError("Badly formed capabilities")
+
+
+    def _set_session_id(id: bytes):
+        session_id = id
+
+    def _parse_hello_body(body: bytes):
+        parts = body.split(b">", 1)
+        if len(parts) == 1 and parts[0] == b"":
+            # done
+            return
+        elif len(parts) == 2:
+            part = parts[0]
+            tag_name = part[1:]
+            start_tag = b"<" + tag_name + b">"
+            end_tag = b"</" + tag_name + b">"
+            end_pos = body.index(end_tag, None, None)
+            tag_content: bytes = body[len(start_tag):end_pos]
+            rest = body[len(start_tag) + len(tag_content) + len(end_tag):]
+            if tag_name == b"capabilities":
+                _parse_capabilities(tag_content)
+            if tag_name == b"session-id":
+                _set_session_id(tag_content)
+            _parse_hello_body(rest)
+
+
+    def parse_hello(msg: bytes):
+        # If you're parsing HTML^W with regexp you got two problems... but we're
+        # doing it with string parsing soo no problemo, right ;)
+        HELLO_XML_START = b"""<hello xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">"""
+        HELLO_XML_END = b"</hello>"
+        if msg.startswith(HELLO_XML_START, None, None) and msg.endswith(HELLO_XML_END, None, None):
+            body = msg[len(HELLO_XML_START):len(HELLO_XML_END)*-1]
+            _parse_hello_body(body)
+        else:
+            raise ValueError("Unhandled hello msg" + msg.decode())
+
+    def send_hello():
+        hello = """<?xml version="1.0" encoding="UTF-8"?>
+        <hello xmlns="urn:ietf:params:xml:ns:netconf:base:1.0">
+            <capabilities>
+                <capability>urn:ietf:params:netconf:base:1.0</capability>
+                <capability>urn:ietf:params:netconf:base:1.1</capability>
+            </capabilities>
+        </hello>]]>]]>"""
+        write(hello)
+
+    def handle_msg(msg):
+        # Deal with XML headers, most likely encoding declaration
+        if msg.startswith(b"<?xml", None, None):
+            parts = msg.split(b"?>", 1)
+            _handle_msg(parts[1])
+        else:
+            _handle_msg(msg)
+
+    def strip_tag(name: str, data: bytes):
+        d = data.decode()
+        open_tag_start = d.index("<", None, None)
+        open_tag_end = d.index(">", None, None)
+        close_tag_end = d.rindex(">", None, None)
+        close_tag_start = d.rindex("<", None, None)
+
+        open_tag_name = d[open_tag_start+1:open_tag_start+1+len(name)]
+        close_tag_name = d[close_tag_end-len(name):close_tag_end]
+
+        if open_tag_name == name and close_tag_name == name:
+            return d[open_tag_end+1:close_tag_start-1].encode()
+        else:
+            print("BAD TAG NAME, not stripping anything...")
+            return d.encode()
+
+    # FIXME: why cannot specify explicit type signature?
+    #def call_cb(cb: action(Client, str) -> None, data: str) -> None:
+    def call_cb(cb, data: str):
+        NotImplemented
+
+    def _handle_msg(msg):
+        if state == STATE_HELLO:
+            # Strip off XML header if there's one, then parse rest as <hello>...
+            # it must be a hello! Also, send our hello back!
+            parse_hello(msg)
+            send_hello()
+
+            state = STATE_NORMAL
+
+            if CAP_NC_1_1 in capabilities:
+                framing = CHUNKED_FRAMING
+            on_connect(self)
+
+        elif state == STATE_NORMAL:
+            # TODO: parse received messages!
+            if msg.startswith(b"""<nc:rpc-reply""", None, None):
+                parts = msg.split(b">", 1)
+                reply_data_end = parts[1].rindex(b"<", None, None)
+                reply_data = parts[1][:reply_data_end]
+                content = strip_tag("data", reply_data)
+                msg_id_pos = parts[0].find(b":message-id", None, None)
+                msg_id = int(parts[0][msg_id_pos+len(b"message-id=)"):].decode().strip('"'))
+                cb = rpc_cbs[msg_id]
+                del rpc_cbs[msg_id]
+                call_cb(cb, content.decode())
+            else:
+                print("Unhandled message:", msg)
+
+
+    def parse_chunked_frame(data: bytes) -> bytes:
+        print("HELLO")
+#        if not data.startswith(b"\n#", None, None):
+#            raise ValueError("Invalid chunked framed")
+        parts = data.split(b"\n", 2)
+        mlen = int(parts[1][1:].decode())
+        # TODO: if we don't have this much data, we must wait...
+        if len(parts[2]) < mlen:
+            print("NOT ENOUGH DATA")
+            #return data
+        msg = parts[2][:mlen]
+        handle_msg(msg)
+        # message length is only content, not including the chunke framing start
+        # and end markers, like \n#xxx\nCONTENT\n##\n, while we already found
+        # the start position, we need to strip away the end marker, which is
+        # always of fixed length 4, thus mlen+4 and call ourselves recursively
+        rest = parts[2][mlen+4:]
+        if rest == b"":
+            return b""
+        else:
+            return parse_chunked_frame(rest)
+
+
+    def p_on_stdout(p, data) -> None:
+        #print("BUF :", buf)
+        #print("DATA:", data)
+        buf += data
+        # <hello> message is always followed by ]]>]]> separator, so at the very
+        # least, we start out here
+        if framing == SEPARATOR_FRAMING:
+            # If we don't see the separator yet, we'll get back one element. If
+            # separator is last, we get two elements where second is b""
+            #buf = data
+            msgs = buf.split(b"]]>]]>", -1)
+            buf = b""
+            if len(msgs) == 1:
+                # Not enough data, just wait till there's more
+                return
+            for msg in msgs:
+                if msg == b"":
+                    return
+                handle_msg(msg)
+        elif framing == CHUNKED_FRAMING:
+            #print("BUF:", buf)
+            newbuf = parse_chunked_frame(buf)
+            #print("NEWBUF:", newbuf)
+            buf = newbuf
+
+
+    p_on_stdout_redirect = p_on_stdout
+
+
+def _force_ext():
+    """Force compilation using .ext.c
+
+    Only top level functions are recognized as externally defined by actonc
+    TODO: fix in actonc and remove this
+    """
+    NotImplemented

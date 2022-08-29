@@ -110,6 +110,7 @@ DIST_HFILES=\
 	dist/rts/rts.h \
 	dist/builtin/env.h \
 	$(addprefix dist/,$(BUILTIN_HFILES))
+DIST_TYFILES=$(subst stdlib/out/types,dist/types,$(STDLIB_TYFILES))
 DIST_DBARCHIVE=$(addprefix dist/,$(DBARCHIVE))
 DIST_ARCHIVES=$(addprefix dist/,$(ARCHIVES))
 
@@ -259,10 +260,18 @@ builtin/ty/out/types/__builtin__.ty: builtin/ty/src/__builtin__.act $(ACTONC)
 	$(ACTC) $<
 
 # Build our standard library
+# TODO: remove workaround that explicitly builds acton.rts & process due to
+#       https://github.com/actonlang/acton/issues/837
 stdlib/out/dev/lib/libActonProject.a: $(STDLIB_SRCFILES) dist/types/__builtin__.ty $(DIST_HFILES) $(ACTONC)
+	cd stdlib && ../$(ACTC) src/acton/rts.act --dev
+	cd stdlib && ../$(ACTC) src/process.act --dev
 	cd stdlib && ../$(ACTC) build --dev
 
+# TODO: remove workaround that explicitly builds acton.rts & process due to
+#       https://github.com/actonlang/acton/issues/837
 stdlib/out/rel/lib/libActonProject.a: $(STDLIB_SRCFILES) dist/types/__builtin__.ty $(DIST_HFILES) $(ACTONC)
+	cd stdlib && ../$(ACTC) src/acton/rts.act
+	cd stdlib && ../$(ACTC) src/process.act
 	cd stdlib && ../$(ACTC) build
 	cp -a stdlib/out/types/. dist/types/
 

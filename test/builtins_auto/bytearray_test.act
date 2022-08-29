@@ -1,6 +1,10 @@
 actor main(env):
     r = range(50,250,50)
     lst0 = list(r)
+
+    b = b""
+    b += b"<asdfasdf>]]>]]>"
+
 # TODO: fix all this?
 #    b = bytearray(lst0)
 #    print(b.center(25,None))

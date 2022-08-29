@@ -1,0 +1,28 @@
+
+
+import acton.rts
+import netconf
+import process
+
+
+actor NCHandler():
+    def on_reply(reply: str) -> None:
+        print("HEY BABERIBA:", reply)
+
+
+actor main(env):
+    #connect_auth = net.TCPConnectAuth(net.TCPAuth(net.NetAuth(env.auth)))
+    connect_auth = process.ProcessAuth(env.auth)
+    h = NCHandler()
+
+    def on_reply(c: netconf.Client, reply: str) -> None:
+        print("GOT A REPLY:", c, reply)
+
+    def on_connect(c):
+        c.rpc("<my-cool-rpc/>", on_reply)
+        c.rpc("<my-cool-rpc2/>", on_reply)
+
+    def on_error(c, errmsg):
+        print("ERROR:", errmsg)
+
+    c = netconf.Client(connect_auth, "127.0.0.1", 830, "myuser", "mysecert", None, on_connect, on_error)
