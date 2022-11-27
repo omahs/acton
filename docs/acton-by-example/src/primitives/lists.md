@@ -37,6 +37,5 @@ List items: [Firsty, foo, foo, bar, banana]
 A slice   : [foo, bar]
 ```
 
-
 - All items in a list must be of the same type
   - It is not allowed to mix, like `["foo", 1]` leads to a compiler error

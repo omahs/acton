@@ -2,7 +2,9 @@
 
 Acton supports a plethora of primitive data types.
 
-- `int` integers, like `1`, `2`, `123512` or `-6542`
+- `int` integers, like `1`, `2`, `123512`, `-6542` or `1267650600228229401496703205376` 
+  - `int` is arbitrary precision and can grow beyond machine word sizes
+  - `i64` is a fixed size signed 64 bit integer that maps to a machine type
 - `float` floats, like `1.3` or `-382.31`
 - `bool` boolean, like `True` or `False`
 - `str` strings, like `foo`
@@ -12,7 +14,7 @@ Acton supports a plethora of primitive data types.
 - [tuples](primitives/tuples.md) like `(1, "foo")`
 - [sets](primitives/sets.md) like `{"foo", "bar"}`
 
-In Acton, mutable state can only be held by actors. You can define a global variable at the top level in your program, but it becomes constant. Assigning to the same name in an actor will overshadow the global variable.
+In Acton, mutable state can only be held by actors. Global definitions in modules are constant. Assigning to the same name in an actor will shadow the global variable.
 
 Source:
 ```python
