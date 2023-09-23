@@ -630,26 +630,34 @@ cast' env (TFX _ fx1) (TFX _ fx2)
 
 cast' env (TNil _ k1) (TNil _ k2)
   | k1 == k2                                = return ()
-cast' env (TVar _ tv) r2@(TNil _ k)         = do substitute tv (tNil k)
+cast' env (TVar _ tv) r2@(TNil _ k)
+  | tvkind tv == k                          = do substitute tv (tNil k)
                                                  cast env (tNil k) r2
-cast' env r1 (TRow _ k n t2 r2)             = do (t1,r1') <- findElem k (tNil k) n r1 (rowTail r2)
-                                                 cast env t1 t2
-                                                 cast env r1' r2
-cast' env (TRow _ k n t1 r1) r2             = do (t2,r2') <- findElem k (tNil k) n r2 (rowTail r1)
-                                                 cast env t1 t2
-                                                 cast env r1 r2'
-
+cast' env r1@(TNil _ k) (TVar _ tv)
+  | k == tvkind tv                          = do substitute tv (tNil k)
+                                                 cast env r1 (tNil k)
+cast' env (TRow _ k1 n1 t1 r1) (TRow _ k2 n2 t2 r2)
+  | k1 == k2 && n1 == n2                    = do cast env t1 t2
+                                                 cast env r1 r2
+cast' env (TVar _ tv) r2@(TRow _ k n _ _)
+  | tvkind tv == k                          = do r1 <- instwild env k $ tRow k n tWild tWild
+                                                 substitute tv r1
+                                                 cast env r1 r2
+cast' env r1@(TRow _ k n _ _) (TVar _ tv)
+  | k == tvkind tv                          = do r2 <- instwild env k $ tRow k n tWild tWild
+                                                 substitute tv r2
+                                                 cast env r1 r2
 cast' env (TVar _ tv) t2@TFun{}
-  | univar tv                               = do t1 <- instwild env KType $ tFun tWild tWild tWild tWild
+  | univar tv && tvkind tv == KType         = do t1 <- instwild env KType $ tFun tWild tWild tWild tWild
                                                  substitute tv t1
                                                  cast env t1 t2
 cast' env t1@TFun{} (TVar _ tv)                                                                             -- Should remove this, rejects tv = TOpt...
-  | univar tv                               = do t2 <- instwild env KType $ tFun tWild tWild tWild tWild
+  | univar tv && KType == tvkind tv         = do t2 <- instwild env KType $ tFun tWild tWild tWild tWild
                                                  substitute tv t2
                                                  cast env t1 t2
 
 cast' env (TVar _ tv) t2@TTuple{}
-  | univar tv                               = do t1 <- instwild env KType $ tTuple tWild tWild
+  | univar tv && tvkind tv == KType         = do t1 <- instwild env KType $ tTuple tWild tWild
                                                  substitute tv t1
                                                  cast env t1 t2
 
@@ -711,8 +719,7 @@ sub' env eq w t1@(TTuple _ p1 k1) t2@(TTuple _ p2 k2)                           
                                                      cs = [Sub wp p1 p2, Sub wk k1 k2]
                                                  reduce env (Eqn w (wFun t1 t2) e : eq) cs
 
--- Note: a sub-row constraint R1 < R2 is witnessed by a lambda of type
--- (*(R1))->(*(R2)) or (**(R1))->(**(R2)), depending on the row kind
+-- Note: a sub-row constraint R1 < R2 is witnessed by a lambda of type ((R1))->(R2)
 
 sub' env eq w r1@(TNil _ k1) r2@(TNil _ k2)
   | k1 == k2                                = return (idwit env w tUnit tUnit : eq)
@@ -1139,11 +1146,11 @@ idwit env w t1 t2                       = Eqn w (wFun t1 t2) (eLambda [(px0,t1)]
 rowFun PRow r1 r2                       = tFun fxPure (posRow (tTupleP r1) posNil) kwdNil (tTupleP r2)
 rowFun KRow r1 r2                       = tFun fxPure (posRow (tTupleK r1) posNil) kwdNil (tTupleK r2)
 
-rowWit PRow w n t r wt wr               = eLambda [(px0,posRow t r)] eTup
+rowWit PRow w n t r wt wr               = eLambda [(px0,tTupleP $ posRow t r)] eTup
   where eTup                            = Paren l0 $ Tuple l0 (PosArg e1 (PosStar e2)) KwdNil
         e1                              = eCall (eVar wt) [DotI l0 (eVar px0) 0]
         e2                              = eCall (eVar wr) [RestI l0 (eVar px0) 0]
-rowWit KRow w n t r wt wr               = eLambda [(px0,kwdRow n t r)] eTup
+rowWit KRow w n t r wt wr               = eLambda [(px0,tTupleK $ kwdRow n t r)] eTup
   where eTup                            = Paren l0 $ Tuple l0 PosNil (KwdArg n e1 (KwdStar e2))
         e1                              = eCall (eVar wt) [Dot l0 (eVar px0) n]
         e2                              = eCall (eVar wr) [Rest l0 (eVar px0) n]
